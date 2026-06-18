@@ -100,3 +100,16 @@ LIMIT 10;
 // Запит 6: Найкоротший ланцюжок зв’язку між двома користувачами через фільми
 MATCH p = shortestPath((u1:User {userId: 1})-[:RATED*..6]-(u2:User {userId: 10}))
 RETURN p;
+
+// Запит 6 (Додатковий експеримент): Пошук користувачів на максимальній графовій дистанції (знайшлися лише на 4 хопи, на 5 та 6 немає результатів)
+MATCH (u1:User {userId: 1})
+MATCH p = shortestPath((u1)-[:RATED*..6]-(u2:User))
+WHERE u1 <> u2
+WITH u2, p
+WHERE length(p) = 4
+RETURN u2.userId AS RemoteUserID, u2.gender AS Gender, u2.age AS Age, length(p) AS Distance
+LIMIT 10;
+
+// Запит 6 (Візуалізація шляху): Найкоротший шлях від userId:1 до найвіддаленішого userId:46
+MATCH p = shortestPath((u1:User {userId: 1})-[:RATED*..6]-(u2:User {userId: 46}))
+RETURN p;
