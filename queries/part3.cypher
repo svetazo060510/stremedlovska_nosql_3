@@ -22,7 +22,7 @@ ORDER BY TotalFives DESC;
 // ЗАПИТИ СЕРЕДНЬОГО РІВНЯ
 // ==========================================
 
-// Запит 3: Спільні фільми користувачів №1 та №2 з рейтингом >= 4
+// Запит 3: Спільні фільми користувачів #1 та #2 з рейтингом >= 4
 MATCH (u1:User {userId: 1})-[r1:RATED]->(m:Movie)<-[r2:RATED]-(u2:User {userId: 2})
 WHERE r1.rating >= 4 AND r2.rating >= 4
 RETURN m.title AS Title, m.year AS Year, r1.rating AS RatingUser1, r2.rating AS RatingUser2
@@ -40,10 +40,6 @@ ORDER BY AverageRating DESC;
 // СКЛАДНІ ЗАПИТИ
 // ==========================================
 
-// ==========================================
-// СКЛАДНІ ЗАПИТИ
-// ==========================================
-
 // Запит 5 (Варіант А): Класична фільтрація (Базовий)
 MATCH (u:User {userId: 1})-[r1:RATED]->(m1:Movie)<-[r2:RATED]-(peer:User)
 WHERE r1.rating >= 4 AND r2.rating >= 4 AND u <> peer
@@ -55,7 +51,7 @@ ORDER BY RecommendedByUsers DESC, AveragePeerRating DESC
 LIMIT 10;
 
 // Запит 5 (Варіант Б): Оптимізована фільтрація (Швидкісний)
-// Оптимізація за рахунок обмеження вибірки топ-улюблених фільмів та фільтрації істинних однодумців
+// Оптимізація за рахунок обмеження вибірки топ-улюблених фільмів та фільтрації однодумців
 MATCH (u:User {userId: 1})-[r1:RATED]->(m1:Movie)
 WHERE r1.rating >= 4
 WITH u, m1 
@@ -66,7 +62,7 @@ WHERE r2.rating >= 4 AND u <> peer
 WITH u, peer, count(m1) AS intersectionSize
 WHERE intersectionSize >= 3 // Обмеження 2: Тільки ті люди, у кого мінімум 3 спільні фільми з юзером
 MATCH (peer)-[r3:RATED]->(recMovie:Movie)
-WHERE r3.rating = 5 AND NOT (u)-[:RATED]->(recMovie) // Обмеження 3: Тільки фільми у захваті (оцінка 5)
+WHERE r3.rating = 5 AND NOT (u)-[:RATED]->(recMovie) // Обмеження 3: Тільки фільми з оцінкою 5
 WITH recMovie, count(DISTINCT peer) AS RecommendedByUsers, avg(r3.rating) AS AvgPeerRating
 RETURN recMovie.title AS RecommendedMovie, recMovie.year AS Year, RecommendedByUsers, round(AvgPeerRating, 2) AS AveragePeerRating
 ORDER BY RecommendedByUsers DESC, AveragePeerRating DESC

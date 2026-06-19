@@ -1,3 +1,7 @@
+// ==========================================
+// ЗАВАНТАЖЕННЯ
+// ==========================================
+
 // БЛОК 1: Створення обмежень унікальності та індексів
 CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (u:User) REQUIRE u.userId IS UNIQUE;
 CREATE CONSTRAINT movie_id_unique IF NOT EXISTS FOR (m:Movie) REQUIRE m.movieId IS UNIQUE;
