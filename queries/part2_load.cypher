@@ -2,19 +2,19 @@
 // ЗАВАНТАЖЕННЯ
 // ==========================================
 
-// БЛОК 1: Створення обмежень унікальності та індексів
+// Крок 1: Створення обмежень унікальності та індексів
 CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (u:User) REQUIRE u.userId IS UNIQUE;
 CREATE CONSTRAINT movie_id_unique IF NOT EXISTS FOR (m:Movie) REQUIRE m.movieId IS UNIQUE;
 CREATE INDEX genre_name_index IF NOT EXISTS FOR (g:Genre) ON (g.name);
 
-// БЛОК 2: Завантаження користувачів
+// Крок 2: Завантаження користувачів
 LOAD CSV WITH HEADERS FROM 'file:///users.csv' AS row
 MERGE (u:User {userId: toInteger(row.userId)})
 SET u.gender = row.gender,
     u.age = toInteger(row.age),
     u.occupation = toInteger(row.occupation);
 
-// БЛОК 3: Завантаження фільмів та створення унікальних жанрів
+// Крок 3: Завантаження фільмів та створення унікальних жанрів
 LOAD CSV WITH HEADERS FROM 'file:///movies.csv' AS row
 MERGE (m:Movie {movieId: toInteger(row.movieId)})
 WITH m, row
@@ -26,10 +26,12 @@ UNWIND split(row.genres, '|') AS genreName
 MERGE (g:Genre {name: genreName})
 MERGE (m)-[:HAS_GENRE]->(g);
 
-// БЛОК 4: Пакетне завантаження ребер оцінок (через APOC)
+// Крок 4: Пакетне завантаження ребер оцінок (через APOC)
 CALL apoc.periodic.iterate(
   "LOAD CSV WITH HEADERS FROM 'file:///ratings.csv' AS row RETURN row",
-  "MATCH (u:User {userId: toInteger(row.userId)})
+  "WITH row 
+   WHERE toInteger(row.rating) IS NOT NULL 
+   MATCH (u:User {userId: toInteger(row.userId)})
    MATCH (m:Movie {movieId: toInteger(row.movieId)})
    MERGE (u)-[r:RATED]->(m)
    SET r.rating = toInteger(row.rating),
@@ -37,7 +39,7 @@ CALL apoc.periodic.iterate(
   {batchSize: 20000, parallel: false}
 );
 
-// Перевірка
+// Крок 5: Перевірка
 MATCH (u:User) RETURN count(u) AS users;
 MATCH (m:Movie) RETURN count(m) AS movies;
 MATCH ()-[r:RATED]->() RETURN count(r) AS ratings;

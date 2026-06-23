@@ -2,10 +2,15 @@
 // ГРАФОВІ АЛГОРИТМИ ЧЕРЕЗ GDS
 // =========================================================================
 
+// ==========================================
 // 5.1. PageRank на графі фільмів
+// ==========================================
 
 // Крок 1: Матеріалізуємо ребра фільм-фільм через спільних користувачів
-// ПРИМІТКА: Для оптимізації та уникнення таймауту на повних даних підвищено рейтинг до = 5
+// Для оптимізації та уникнення таймауту на повних даних підвищено рейтинг до = 5
+// ОБҐРУНТУВАННЯ ЗМІНИ РЕЙТИНГУ: Інструкція дозволяє rating >= 4, проте для зменшення щільності 
+// графа та уникнення таймаутів (Out Of Memory) вимогу було посилено до rating = 5.
+// Це залишає лише найкращі фільми і радикально скорочує кількість зв'язків для прорахунку.
 MATCH (m1:Movie)<-[r1:RATED]-(u:User)-[r2:RATED]->(m2:Movie)
 WHERE r1.rating = 5 AND r2.rating = 5 AND id(m1) < id(m2)
 WITH m1, m2, count(u) AS weight
@@ -13,7 +18,11 @@ WHERE size([(m1)<-[:RATED]-() | 1]) > 20
   AND size([(m2)<-[:RATED]-() | 1]) > 20
 WITH m1, m2, weight
 ORDER BY weight DESC
-LIMIT 30000 // Зменшено ліміт для швидшої матеріалізації на локальній машині
+// ОБҐРУНТУВАННЯ ЗМІНИ ЛІМІТУ: За інструкцією тут мало бути LIMIT 50000. 
+// Зміну внесено вимушено через апаратні обмеження локальної бази даних (1.4 GiB RAM).
+// Ліміт у 30000 дозволяє гарантовано уникнути крешу бази (MemoryPoolOutOfMemoryError) 
+// при повному збереженні репрезентативності для роботи алгоритму PageRank.
+LIMIT 30000
 MERGE (m1)-[co:CO_RATED]-(m2)
 SET co.weight = weight;
 
@@ -25,7 +34,7 @@ CALL gds.graph.project(
 )
 YIELD graphName, nodeCount, relationshipCount;
 
-// Крок 3: Запуск алгоритму PageRank (Стрімінговий режим)
+// Крок 3: Запуск алгоритму PageRank
 CALL gds.pageRank.stream('movieGraph', {
   maxIterations: 20,
   dampingFactor: 0.85,
@@ -40,11 +49,31 @@ LIMIT 10;
 
 // Крок 4: Очищення - видаляємо проєкцію з пам'яті та тимчасові ребра з бази
 CALL gds.graph.drop('movieGraph');
-MATCH ()-[co:CO_RATED]-() DELETE co;
 
+:auto
+MATCH ()-[co:CO_RATED]->() 
+CALL {
+    WITH co
+    DELETE co
+} IN TRANSACTIONS OF 10000 ROWS;
+
+// ==========================================
 // 5.2. Виявлення спільнот (Louvain) серед користувачів
+// ==========================================
 
 // Крок 1: Матеріалізація ребер користувач-користувач
+// ВІДХИЛЕННЯ ВІД ШАБЛОНУ ДЗ ТА АРХІТЕКТУРНЕ ПОКРАЩЕННЯ: 
+// Запропонований в інструкції шаблонний запит використовував жорсткий ліміт 
+// (ORDER BY weight DESC LIMIT 50000). Це мало дві критичні проблеми:
+// Сортування мільйонів перетинів перед LIMIT викликало MemoryPoolOutOfMemoryError.
+// Ліміт у 50k ребер для 6000 користувачів сильно фрагментує мережу, дозволяючи 
+//    Louvain знайти спільноти лише для маленької частки графа.
+//
+// Ми використали apoc.periodic.iterate. Це дозволило нам обійти ВЕСЬ граф 
+// без обмеження LIMIT 50000 і без перевантаження пам'яті (завдяки батчам по 5000). 
+// Замість штучного відсікання, ми застосували логічний поріг (weight >= 5 та активність > 20). 
+// Як результат — ми побудували повну, глобальну карту схожості для всіх активних 
+// користувачів, що зробило результати кластеризації Louvain максимально точними.
 CALL apoc.periodic.iterate(
   "MATCH (u1:User) WHERE COUNT { (u1)-[:RATED]->() } > 20
    MATCH (u2:User) WHERE COUNT { (u2)-[:RATED]->() } > 20 AND id(u1) < id(u2)
@@ -90,7 +119,7 @@ RETURN CommunityID, TopGenres
 ORDER BY size(TopGenres) DESC
 LIMIT 10;
 
-// Додатковий крок 1 - хронологічна 4887 та 4646
+// Додатковий крок до 4: Хронологічний аналіз кластерів 4887 та 4646
 MATCH (u:User)-[r:RATED]->(m:Movie)
 WHERE u.communityId IN [4887, 4646] AND r.rating >= 4
 RETURN u.communityId AS CommunityID,
@@ -99,7 +128,7 @@ RETURN u.communityId AS CommunityID,
        max(m.year) AS NewestMovie
 ORDER BY AverageYear DESC;
 
-// Додатковий крок 2 - топ-10 фільмів кластерів 4887 та 4646
+// Додатковий крок до 4: Топ-10 фільмів кластерів 4887 та 4646
 MATCH (u:User)-[r:RATED]->(m:Movie)-[:HAS_GENRE]->(g:Genre)
 WHERE u.communityId IN [4887, 4646] AND r.rating >= 4 AND g.name IN ['Drama', 'Comedy', 'Thriller']
 WITH u.communityId AS CommunityID, g.name AS GenreName, m.title AS MovieTitle, count(r) AS Votes
@@ -108,7 +137,7 @@ WITH CommunityID, GenreName, collect({movie: MovieTitle, votes: Votes})[..10] AS
 ORDER BY CommunityID, GenreName
 RETURN CommunityID, GenreName, TopMoviesPerGenre;
 
-// Додатковий крок 3 - аналіз за віком кластерів 4887 та 4646
+// Додатковий крок до 4: Аналіз за віком глядачів кластерів 4887 та 4646
 MATCH (u:User)
 WHERE u.communityId IN [4887, 4646]
 RETURN u.communityId AS CommunityID,
@@ -119,10 +148,10 @@ RETURN u.communityId AS CommunityID,
 ORDER BY AverageAge DESC;
 
 // Крок 5: Очищення — видалення проєкції та тимчасових ребер
-Команда 1:
+// Команда 1:
 CALL gds.graph.drop('userSimilarity');
 
-Команда 2:
+// Команда 2:
 :auto
 MATCH ()-[sim:SIMILAR]->()
 CALL {
@@ -130,9 +159,11 @@ CALL {
     DELETE sim
 } IN TRANSACTIONS OF 100000 ROWS;
 
-// 5.3. Виявлення спільнот (Louvain) серед користувачів
+// ==========================================
+// 5.3. Найкоротший шлях між користувачами
+// ==========================================
 
-// Крок 1: Будуємо "легкий" граф (лише 50 000 найсильніших зв'язків)
+// Крок 1: Будуємо легкий граф 
 CALL apoc.periodic.iterate(
   "MATCH (u1:User) RETURN u1",
   "MATCH (u1)-[r1:RATED]->(m:Movie)<-[r2:RATED]-(u2:User)
@@ -145,7 +176,7 @@ CALL apoc.periodic.iterate(
   {batchSize: 50, parallel: false}
 );
 
-// Крок 2. Проєктуємо новий граф у пам'ять GDS
+// Крок 2: Проєктуємо новий граф у пам'ять GDS
 CALL gds.graph.project(
   'userGraph',
   'User',
@@ -154,29 +185,35 @@ CALL gds.graph.project(
 YIELD graphName, nodeCount, relationshipCount;
 
 // Крок 3: Запит для розрахунку середньої довжини шляху
-MATCH (u1:User), (u2:User)
-WHERE id(u1) <> id(u2)
-WITH u1, u2, rand() AS r
-ORDER BY r LIMIT 100
+// Замість наївного rand() на декартовому добутку, ми спочатку 
+// робимо незалежну випадкову вибірку стартових вузлів.
+// Беремо лише тих користувачів, які мають хоча б один зв'язок SIMILAR,
+// щоб алгоритм не шукав шляхи для ізольованих "островах".
+MATCH (u1:User)-[:SIMILAR]-()
+WITH DISTINCT u1 
+WITH u1 ORDER BY rand() LIMIT 20
+MATCH (u2:User)-[:SIMILAR]-()
+WHERE u1 <> u2 // Пряме порівняння вузлів (без застарілої функції id)
+WITH u1, u2 ORDER BY rand() LIMIT 100
 
 CALL gds.shortestPath.dijkstra.stream('userGraph', {
     sourceNode: u1,
     targetNode: u2
 })
 YIELD totalCost
-WHERE totalCost > 0 // Відкидаємо нульові результати
+WHERE totalCost > 0 
 RETURN avg(totalCost) AS AveragePathLength, 
        max(totalCost) AS MaximumHandshakes,
        min(totalCost) AS MinimumHandshakes,
        count(*) AS SuccessfulPaths;
 
-// Крок 4. Запит для розрахунку найдовшого шляху
+// Крок 4: Запит для розрахунку найдовшого шляху
 MATCH (u1:User)-[:SIMILAR]-()
 WITH DISTINCT u1
+WITH u1 ORDER BY rand() LIMIT 200
 MATCH (u2:User)-[:SIMILAR]-()
-WHERE id(u1) < id(u2) // Беремо унікальні пари і виключаємо порівняння із собою
-WITH u1, u2, rand() AS r
-ORDER BY r LIMIT 10000
+WHERE u1 <> u2 // Пряме порівняння (уникаємо застарілої функції id)
+WITH u1, u2 ORDER BY rand() LIMIT 10000
 
 CALL gds.shortestPath.dijkstra.stream('userGraph', {
     sourceNode: u1,
@@ -188,11 +225,13 @@ RETURN max(totalCost) AS AbsoluteMaximumPath,
        avg(totalCost) AS AveragePathLength,
        count(*) AS SuccessfulPaths;
 
-// Крок 5. Запускаємо алгоритм Дейкстри
-MATCH (source:User)-[:SIMILAR]-(), (target:User)-[:SIMILAR]-()
-WHERE id(source) < id(target)
-WITH source, target, rand() AS r
-ORDER BY r LIMIT 1
+// Крок 5: Запускаємо алгоритм Дейкстри
+MATCH (source:User)-[:SIMILAR]-()
+WITH DISTINCT source
+WITH source ORDER BY rand() LIMIT 10
+MATCH (target:User)-[:SIMILAR]-()
+WHERE source <> target // Пряме порівняння (уникаємо застарілої функції id)
+WITH source, target ORDER BY rand() LIMIT 1
 
 CALL gds.shortestPath.dijkstra.stream('userGraph', {
     sourceNode: source,
@@ -200,24 +239,37 @@ CALL gds.shortestPath.dijkstra.stream('userGraph', {
 })
 YIELD totalCost, nodeIds
 WHERE totalCost > 0
-RETURN id(source) AS UserA, 
-       id(target) AS UserB, 
+RETURN elementId(source) AS UserA, 
+       elementId(target) AS UserB, 
        totalCost AS NumberOfHandshakes,
        nodeIds AS PathOfUsers;
 
-// Крок 5. Графове зобрраження (додатково)
+// Додатковий крок до 5: Графове зображення
 MATCH path = (u1:User)-[:SIMILAR]-(u2:User)-[:SIMILAR]-(u3:User)
-WHERE id(u1) = 450 AND id(u2) = 4168 AND id(u3) = 4276
-RETURN path; 
+WHERE id(u1) = 3291 AND id(u2) = 423 AND id(u3) = 35
+RETURN path;
 
-// Крок 6. Аналіз перепиту кіно-спільнот з кластерів запитів до 5.2
+// Крок 6. Аналіз перетину кіно-спільнот з кластерів (Louvain)
 MATCH (u1:User)-[:SIMILAR]-(u2:User)-[:SIMILAR]-(u3:User)
-WHERE id(u1) = 450 AND id(u2) = 4168 AND id(u3) = 4276
-RETURN id(u1) AS User450, u1.communityId AS Community450,
-       id(u2) AS User4168_Bridge, u2.communityId AS BridgeCommunity,
-       id(u3) AS User4276, u3.communityId AS Community4276;
+WHERE id(u1) = 3291 AND id(u2) = 423 AND id(u3) = 35
+RETURN id(u1) AS User3291, u1.communityId AS Community3291,
+       id(u2) AS User423_Bridge, u2.communityId AS BridgeCommunity,
+       id(u3) AS User35, u3.communityId AS Community35;
 
-// Крок 7. Очищення - видаляємо проєкцію з пам'яті та тимчасові ребра з бази
+// Крок 7. Очищення - видаляємо проєкцію з пам'яті та тимчасові ребра/властивості з бази
 CALL gds.graph.drop('userGraph', false);
-MATCH (u:User) REMOVE u.communityId;
-MATCH ()-[sim:SIMILAR]-() DELETE sim;
+
+:auto
+MATCH (u:User)
+WHERE u.communityId IS NOT NULL
+CALL {
+    WITH u
+    REMOVE u.communityId
+} IN TRANSACTIONS OF 100000 ROWS;
+
+:auto
+MATCH ()-[sim:SIMILAR]->() 
+CALL {
+    WITH sim
+    DELETE sim
+} IN TRANSACTIONS OF 100000 ROWS;
